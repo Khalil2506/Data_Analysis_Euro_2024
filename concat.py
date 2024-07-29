@@ -1,44 +1,48 @@
 import pandas as pd
-from rapidfuzz import process, fuzz
 from statsbombpy import sb
+from fuzzywuzzy import fuzz, process
 
-def add_id_player_df(id_competition,id_season,df_player):
-    # Leer datos de Excel
-    df_excel = pd.read_excel('Euro_2024.xlsx', sheet_name='Player_euro')
+def add_id_player_df(id_competition, id_season, df_player):
+    # Obtener todos los partidos de la Copa América 2024
+    df_matches = sb.matches(competition_id=id_competition, season_id=id_season)
 
-    # Obtener todos los partidos de la Eurocopa 2024
-    df_euros = sb.matches(competition_id=id_competition, season_id=id_season)
+    # Inicializar un DataFrame vacío para almacenar todas las alineaciones
+    all_lineups = pd.DataFrame()
 
-    # Inicializar un DataFrame vacío para almacenar todos los eventos
-    all_events = pd.DataFrame()
+    # Iterar sobre todos los partidos y obtener las alineaciones de ambos equipos
+    for match_id in df_matches['match_id']:
+        lineups = sb.lineups(match_id=match_id)
+        for team in lineups.keys():  # Iterar sobre equipos (home y away)
+            team_lineup = lineups[team]
+            all_lineups = pd.concat([all_lineups, team_lineup], ignore_index=True)
 
-    # Iterar sobre todos los match_id y obtener los eventos
-    for match_id in df_euros['match_id']:
-        events = sb.events(match_id=match_id)
-        all_events = pd.concat([all_events, events], ignore_index=True)
-
-    # Filtrar datos de StatsBomb para eliminar filas con NaN en las columnas relevantes
-    all_events = all_events.dropna(subset=['player', 'player_id'])
-
+    # Preprocesar los nombres para evitar problemas de formato
     def preprocesar_nombre(nombre):
+        if pd.isna(nombre):
+            return ""
         return nombre.lower().strip()
 
-    # Preprocesar los nombres en el DataFrame de Excel y en los eventos
+    # Preprocesar los nombres en el DataFrame de Excel y en las alineaciones
     df_player['Player'] = df_player['Player'].apply(preprocesar_nombre)
-    all_events['player'] = all_events['player'].apply(preprocesar_nombre)
+    all_lineups['player_nickname'] = all_lineups['player_nickname'].apply(preprocesar_nombre)
+    all_lineups['player_name'] = all_lineups['player_name'].apply(preprocesar_nombre)
 
-    def encontrar_mejor_coincidencia(nombre_excel, nombres_statsbomb, ids_statsbomb):
-        mejor_coincidencia = process.extractOne(nombre_excel, nombres_statsbomb, scorer=fuzz.ratio)
-        if mejor_coincidencia:
-            nombre_mas_parecido, similitud = mejor_coincidencia[:2]
-            if similitud > 75:  # Puedes ajustar este umbral según tus necesidades
-                return ids_statsbomb[nombres_statsbomb.index(nombre_mas_parecido)]
+    def encontrar_mejor_coincidencia(nombre_excel, lineups_df):
+        coincidencia_nickname = process.extractOne(
+            nombre_excel, lineups_df['player_nickname'], scorer=fuzz.token_set_ratio
+        )
+        if coincidencia_nickname and coincidencia_nickname[1] > 75:
+            return lineups_df.loc[lineups_df['player_nickname'] == coincidencia_nickname[0], 'player_id'].values[0]
+
+        coincidencia_name = process.extractOne(
+            nombre_excel, lineups_df['player_name'], scorer=fuzz.token_set_ratio
+        )
+        if coincidencia_name and coincidencia_name[1] > 75:
+            return lineups_df.loc[lineups_df['player_name'] == coincidencia_name[0], 'player_id'].values[0]
+        
         return None
 
-    nombres_statsbomb = all_events['player'].tolist()
-    ids_statsbomb = all_events['player_id'].tolist()
-
-    df_player['player_id'] = df_player['Player'].apply(lambda x: encontrar_mejor_coincidencia(x, nombres_statsbomb, ids_statsbomb))
+    df_player['player_id'] = df_player['Player'].apply(lambda x: encontrar_mejor_coincidencia(x, all_lineups))
     df_player = df_player[['player_id'] + df_player.columns[:-1].tolist()]
 
     return df_player
